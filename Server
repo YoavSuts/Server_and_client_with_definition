@@ -1,0 +1,76 @@
+import socket
+import select
+import time
+from datetime import datetime
+from bs4 import BeautifulSoup
+import requests
+
+MAX_MSG_LENGTH = 1024
+SERVER_PORT = 5555
+SERVER_IP = "127.0.0.1"
+print("Setting up server...")
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.bind((SERVER_IP, SERVER_PORT))
+server_socket.listen()
+DATA2 = "Server Message: "
+print("Listening for clients...")
+client_sockets = []
+messages_To_Send = []
+
+
+def get_meaning(messege):  # gets a message and returns the meaning of it
+    definition = messege[1::].capitalize()
+    try:
+        request = requests.get(f"https://www.dictionary.com/browse/{definition}")
+        start_content = f"<meta content=\"{definition} definition, "
+        soup = BeautifulSoup(request.text, "html.parser")
+        index_of_content = soup.prettify().find(start_content) + len(start_content)
+        text = ""
+        for letter in soup.prettify()[index_of_content::]:
+            if letter == ';' or letter == '.':
+                break
+            text += letter
+        text += '.'
+        return text
+    except Exception as e:
+        print(e)
+
+
+while True:
+    rlist, wlist, xlist = select.select([server_socket] + client_sockets, client_sockets, [])
+    for current_socket in rlist:  # goes over list of sockets it can read from
+        if current_socket is server_socket:
+            connection, client_address = current_socket.accept()
+            print("New client joined!", client_address)
+            client_sockets.append(connection)
+        else:
+            try:
+                data = current_socket.recv(MAX_MSG_LENGTH).decode()
+                if data == "STOP":  # if data is STOP then disconnect the client socket
+                    print("Connection closed", datetime.now().strftime("%H:%M"), client_address[0])
+                    client_sockets.remove(current_socket)
+                    current_socket.close()
+                else:
+                    messages_To_Send.append((current_socket, data))
+                    print(datetime.now().strftime("%H:%M"), data, client_address[0])
+
+            except ConnectionResetError as E:
+                print("Connection closed", datetime.now(), client_address[0])
+                client_sockets.remove(current_socket)
+                current_socket.close()
+    for message in messages_To_Send:
+        current_socket, data = message
+        if data[0] != "@":
+            data = DATA2 + data
+            for sock in wlist:  # goes over writeable sockets
+                if sock != current_socket:
+                    sock.send(data.encode("UTF-8"))
+
+        elif data[0] == "@":
+            if current_socket in wlist:
+                if "prefix=\"og: http://ogp." in get_meaning(data):  # if definition is not found
+                    current_socket.send("Definition not found".encode())
+                else:
+                    current_socket.send(get_meaning(data).encode())  # sends client the definition
+
+        messages_To_Send.remove(message)
